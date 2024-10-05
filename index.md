@@ -1,6 +1,6 @@
 # Task 2: Process documentation
 
-## Research ![Lightbulb](/images/lightbulb.png =50x50):
+## Research <img src="/images/lightbulb.png" width="50" height="50" alt="Lightbulb">:
 
 
 ### Themes:
