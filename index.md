@@ -27,14 +27,18 @@ pie
 Approaching this design task I first tried a top-down approach, I decided to investigate an interesting medium. The topic I decided to investigate was a neopixel project. Neopixels were chosen due to their potential to satisfy all aspects of the project scope. The project that was investigated was a volumetric display created by [mitxela.](https://www.youtube.com/@mitxela)
 
 ![mitxela](https://mitxela.com/img/uploads/blinken/candle/prototype-without-battery.jpg)
+```Source:```[Mitxela's design document](https://github.com/mitxela/candle)
 
 This project utilises an optical illusion called 'persistence of vision', a visual phenomenon where the brain retains an image for a brief period after it's no longer visible. This creates the illusion of motion when a series of still images are displayed quickly enough; similiar to a flip book animation:
 
 ![wikimediacommons](https://upload.wikimedia.org/wikipedia/commons/5/59/Flip_Book_Movie_v2.gif)
+```Source:```[WIKIMEDIACOMMONS](https://commons.wikimedia.org/wiki/File:Flip_Book_Movie_v2.gif)
 
 Furthermore this illusion can be utilised to make a 2 dimensional plane appear three dimensional, when it is rotated around a fixed point. Mitxela's project implements an electric motor that spins a sheet of neopixels, resulting in the appearance of a three dimensional image:
 
 ![mitxela](https://mitxela.com/img/uploads/blinken/candle/first-test.jpg)
+```Source:```[Mitxela's design document](https://github.com/mitxela/candle)
+
 
 Evaluating mitxela's [design documentation](https://github.com/mitxela/candle) and [github project](https://github.com/mitxela/candle) it has the potential to be an impactful medium. In its present state however it severly lacks in  depth as there is nothing meaningful; it is simply visually appealing. Not to descredit mitxela's design, it just doesn't suit the needs of this project.
 
