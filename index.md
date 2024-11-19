@@ -176,3 +176,365 @@ Refine the design and aesthetics of the art piece to enhance its impact and visu
 - Alarm Intensity: Experiment with different alarm sounds and intensities to create a powerful and impactful experience.
 - User Interaction: Consider adding elements of user interaction, such as a button to reset the alarm or a display to provide feedback.
 - Ethical Considerations: Be mindful of the potential impact of the art piece on viewers, especially those struggling with addiction  or mental health issues.
+
+## Project Realisation:
+```01/11/2024```
+
+Considering the complexity of the project, I wanted to investigate how I could simplify the design, as the list of components was becoming rather expensive. Thus, after doing some research, I stumbled upon an Arduino microcontroller called the ESP32-S3, which appeared to be cheaper and more powerful than a regular Arduino. The ESP32-S3 offers a wide range of features, including Wi-Fi, Bluetooth, and multiple processor cores, making it ideal for IoT (internet of things) and embedded systems applications. Its integration with various sensors and actuators, along with its ability to run complex algorithms, made it an attractive option for streamlining my project. By leveraging the capabilities of the ESP32-S3, I aimed to reduce the overall cost and complexity of my design while maintaining its functionality and performance.
+
+Looking at potential options, I stumbled upon an ESP32-S3 starter kit sold on Amazon for just $61 AUD. This model included an integrated camera and many other accessories, as seen below:
+
+![Freenove Super Starter Kit](images/ESP32_S3_.jpg)
+
+## Aquiring ESP32:
+```06/11/2024```
+
+After receiving my ESP32, I began working through the included tutorial materials to learn C++ programming. I prioritised examples that I believed would be most beneficial to me, such as:
+
+1. Blinking LEDs: A simple project that uses ESP32-S3 WROOM to control blinking a common LED.
+2. Doorbell: A simple project that detects when a button is pressed, resulting in a buzzer sound; and when the button is released, the buzzer stops sounding.
+3. Client connection: Introduces how the ESP32-S3 implements network communications based on TCP/IP protocol.
+4. Server machine: Introduces how the ESP32-S3 can be used as a server to wait for the connection and communication of client on the same LAN.
+5. Camera web server: Describes how to connect the ESP32-S3 using USB and check its IP address through serial monitor. Use web page to access IP address to obtain video and image data.
+
+Upon completion, I felt confident that I could use the ESP32 camera as a replacement for the weight scale I had initially planned. I envisioned using image recognition to count the number of vapes within the camera's field of view.
+
+# Gemini Image Recognition implementation:
+
+## C++?
+```07/11/2024```
+
+I started off by trying to implement the Gemini web API locally on the ESP32, but I immediately ran into several challenges. The first major hurdle was the lack of comprehensive documentation specifically tailored to this use case. While the Gemini API documentation is available, it's primarily focused on server-side implementation and lacks detailed guidance for resource-constrained devices like the ESP32.
+
+Another significant obstacle was the ESP32's processing limitations. Running a full-fledged web API on such a device is demanding, and the performance overhead can impact real-time image processing and network operations. This constraint necessitated careful consideration of the API's functionality and optimization techniques to ensure smooth operation.
+
+Networking issues also posed a challenge. The ESP32's Wi-Fi capabilities, while sufficient for basic connectivity, can be unreliable in certain environments. Factors like network congestion, interference, and router configuration can significantly affect the API's performance and responsiveness. Implementing robust error handling and retry mechanisms became crucial to mitigate these network-related problems.
+
+Furthermore, I discovered that no one else seemed to have attempted a similar implementation. This absence of existing tutorials or community support meant I had to navigate the challenges independently, relying solely on the official Gemini API documentation and general ESP32 programming knowledge.
+
+To overcome these limitations, I decided to adopt a hybrid approach. I plan to offload the majority of the API's processing and storage responsibilities to a local server. The ESP32 will serve as a lightweight client, capturing images and sending them to the server for analysis. The server will then process the images, delete old images, and provide a response to the ESP32.
+
+## C++, PHP, JavaScript?
+```10/11/2024```
+
+My first hurdle involved creating an ESP32 program to upload captured images to a locally hosted LAMP server. Fortunately, I found a valuable resource in a tutorial by [RandomNerdTutorials.](https://randomnerdtutorials.com/esp32-cam-post-image-photo-server/) Which describes how to make HTTP POST requests using the ESP32-CAM board with Arduino IDE to send photos to a server. This tutorial detailed using the ESP32-CAM board and Arduino IDE to send photos to a server via HTTP POST requests.
+
+However, the tutorial's goal was to create a photo gallery. Modifying it to suit my needs meant streamlining the process to handle a single image file at a time, with the option for later deletion. I ended up coming up with this:
+
+### PHP:
+```PHP:
+<?php
+if (!empty($_FILES["imageFile"]["name"])) {
+  $target_dir = "uploads/";
+  $target_file = $target_dir . basename($_FILES["imageFile"]["name"]);
+  echo($target_file);
+  $uploadOk = 1;
+  $imageFileType = strtolower(pathinfo($target_file,PATHINFO_EXTENSION));
+
+  // Check if image file is a actual image or fake image
+  if(isset($_POST["submit"])) {
+    
+    $check = getimagesize($_FILES["imageFile"]["tmp_name"]);
+    if($check !== false) {
+      echo "File is an image - " . $check["mime"] . ".";
+      $uploadOk = 1;
+    }
+    else {
+      echo "File is not an image.";
+      $uploadOk = 0;
+    }
+  }
+
+  // Check if file already exists
+  if (file_exists($target_file)) {
+    echo "Sorry, file already exists.";
+    $uploadOk = 0;
+  }
+
+  // Check file size
+  if ($_FILES["imageFile"]["size"] > 500000) {
+    echo "Sorry, your file is too large.";
+    $uploadOk = 0;
+  }
+
+  // Allow certain file formats
+  if($imageFileType != "jpg" && $imageFileType != "png" && $imageFileType != "jpeg"
+  && $imageFileType != "gif" ) {
+    echo "Sorry, only JPG, JPEG, PNG & GIF files are allowed.";
+    $uploadOk = 0;
+  }
+
+  // Check if $uploadOk is set to 0 by an error
+  if ($uploadOk == 0) {
+    echo "Sorry, your file was not uploaded.";
+  // if everything is ok, try to upload file
+  }
+  else {
+    $uploadDirectory = realpath(dirname(__FILE__)).DIRECTORY_SEPARATOR .'uploads';
+    $filePath = $uploadDirectory .DIRECTORY_SEPARATOR. basename($_FILES["imageFile"]["name"]);
+    if (move_uploaded_file($_FILES["imageFile"]["tmp_name"], $target_file)) {
+      echo "The file ". basename( $_FILES["imageFile"]["name"]). " has been uploaded.\n";
+    }
+    else {
+      echo "Sorry, there was an error uploading your file.";
+    }
+  }
+}
+?>
+```
+### C++
+```C++:
+#include <Arduino.h>
+#include <WiFi.h>
+#include "esp_camera.h"
+
+const char* ssid = "REPLACE_WITH_YOUR_SSID";
+const char* password = "REPLACE_WITH_YOUR_PASSWORD";
+
+String serverName = "192.168.1.XXX";   // REPLACE WITH YOUR Raspberry Pi IP ADDRESS
+//String serverName = "example.com";   // OR REPLACE WITH YOUR DOMAIN NAME
+
+String serverPath = "/upload.php";     // The default serverPath should be upload.php
+
+const int serverPort = 80;
+
+WiFiClient client;
+
+//CAMERA_MODEL_ESP32S3_EYE
+#define PWDN_GPIO_NUM -1
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 15
+#define SIOD_GPIO_NUM 4
+#define SIOC_GPIO_NUM 5
+#define Y2_GPIO_NUM 11
+#define Y3_GPIO_NUM 9
+#define Y4_GPIO_NUM 8
+#define Y5_GPIO_NUM 10
+#define Y6_GPIO_NUM 12
+#define Y7_GPIO_NUM 18
+#define Y8_GPIO_NUM 17
+#define Y9_GPIO_NUM 16
+#define VSYNC_GPIO_NUM 6
+#define HREF_GPIO_NUM 7
+#define PCLK_GPIO_NUM 13
+
+const int timerInterval = 30000;    // time between each HTTP POST image
+unsigned long previousMillis = 0;   // last time image was sent
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);  
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("ESP32-CAM IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+
+  // init with high specs to pre-allocate larger buffers
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 10;  //0-63 lower number means higher quality
+    config.fb_count = 2;
+  } else {
+    config.frame_size = FRAMESIZE_CIF;
+    config.jpeg_quality = 12;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  }
+  
+  // camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    delay(1000);
+    ESP.restart();
+  }
+
+  sendPhoto(); 
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= timerInterval) {
+    sendPhoto();
+    previousMillis = currentMillis;
+  }
+}
+
+String sendPhoto() {
+  String getAll;
+  String getBody;
+
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+  }
+  
+  Serial.println("Connecting to server: " + serverName);
+
+  if (client.connect(serverName.c_str(), serverPort)) {
+    Serial.println("Connection successful!");    
+    String head = "--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String tail = "\r\n--RandomNerdTutorials--\r\n";
+
+    uint32_t imageLen = fb->len;
+    uint32_t extraLen = head.length() + tail.length();
+    uint32_t totalLen = imageLen + extraLen;
+  
+    client.println("POST " + serverPath + " HTTP/1.1");
+    client.println("Host: " + serverName);
+    client.println("Content-Length: " + String(totalLen));
+    client.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+    client.println();
+    client.print(head);
+  
+    uint8_t *fbBuf = fb->buf;
+    size_t fbLen = fb->len;
+    for (size_t n=0; n<fbLen; n=n+1024) {
+      if (n+1024 < fbLen) {
+        client.write(fbBuf, 1024);
+        fbBuf += 1024;
+      }
+      else if (fbLen%1024>0) {
+        size_t remainder = fbLen%1024;
+        client.write(fbBuf, remainder);
+      }
+    }   
+    client.print(tail);
+    
+    esp_camera_fb_return(fb);
+    
+    int timoutTimer = 10000;
+    long startTimer = millis();
+    boolean state = false;
+    
+    while ((startTimer + timoutTimer) > millis()) {
+      Serial.print(".");
+      delay(100);      
+      while (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          if (getAll.length()==0) { state=true; }
+          getAll = "";
+        }
+        else if (c != '\r') { getAll += String(c); }
+        if (state==true) { getBody += String(c); }
+        startTimer = millis();
+      }
+      if (getBody.length()>0) { break; }
+    }
+    Serial.println();
+    client.stop();
+    Serial.println(getBody);
+  }
+  else {
+    getBody = "Connection to " + serverName +  " failed.";
+    Serial.println(getBody);
+  }
+  return getBody;
+}
+```
+
+*Note: I got stuck for a whole day trying to figure out why the tutorial code boot loops my ESP32, I eventually figured out its:*
+```
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+```
+## JavaScript/NodeJS Fail:
+```12/11/2024```
+
+After successfully establishing the image upload mechanism, the next challenge was to analyse the image content. Initially, I considered using JavaScript for this task. However, the inherent limitation of direct communication between JavaScript running in the browser and PHP on the server presented a significant obstacle. Workarounds like storing the image in the PHP session and then accessing it using an AJAX request from JavaScript proved to be ineffective.
+
+Given the limitations of direct JavaScript-PHP communication, I decided to explore alternative approaches. One promising option was to leverage a PHP-based Gemini API, found [here](https://github.com/gemini-api-php/client), to send image analysis requests. However, I encountered compatibility issues with Gemini 1.5 Flash. This specific version presented challenges in terms of image processing capabilities and the integration of external libraries required for sending both image analysis and a prompt, which is what I needed.
+
+## $CURL Solution:
+```15/11/2024```
+
+After two days of searching I have managed to find an alternative solution posted on [squarepoint.net](https://www.squarepoint.net/how-to-use-vision-capabilities-with-gemini-and-php/), which has allowed me to send API requests using $CURL:
+
+### PHP:
+```PHP:
+require "vendor/autoload.php";
+define('GEMINI_API_KEY','MyAPIKey');
+define('MODEL','gemini-1.5-flash-latest');
+define('BASEURL', 'https://generativelanguage.googleapis.com/v1beta');
+function generateContent($textPrompt,$imagePrompt,$imageType)
+{
+    $text = filter_var($textPrompt, FILTER_SANITIZE_STRING);
+    //combine the base url with preferred model and api key
+    $url = sprintf("%s/models/%s:generateContent?key=%s",BASEURL,MODEL,GEMINI_API_KEY);
+     
+    $data = [
+        "contents" => [
+            "parts" => [
+                [
+                    "inlineData" => [
+                        "mimeType" => $imageType,
+                        "data" => $imagePrompt
+                    ]
+                ],
+                [
+                    "text" => $text
+                ]
+            ]
+        ]
+    ];
+    
+    $jsonData = json_encode($data);
+    $ch = curl_init($url);
+     
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonData);
+ 
+    $response = curl_exec($ch);
+ 
+    if (curl_errno($ch)) {
+        echo 'Request error: ' . curl_error($ch);
+    } else {
+     $response = json_decode($response); 
+ 
+     if (isset($response->candidates[0]->content->parts[0]->text)) {
+        $text = $response->candidates[0]->content->parts[0]->text;
+    }
+  }
+    curl_close($ch);
+}
+```
+
+## Sending Data Back:
+```16/11/2024```
+
+Now I just needed to
