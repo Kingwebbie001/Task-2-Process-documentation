@@ -534,7 +534,797 @@ function generateContent($textPrompt,$imagePrompt,$imageType)
 }
 ```
 
-## Sending Data Back:
+## Sending Data Back/Model:
 ```16/11/2024```
 
-Now I just needed to
+The assignment is a day overdue so I am quite stressed, I still need to implement the connection back to the ESP32 to control devices. However, there is little to no documentation to do this online looks like I will have to figure something out myself.
+
+After some searching I was able to find an [article](https://medium.com/@cn0047/super-simple-php-websocket-example-ea2cd5893575) that shows how to create a websocket to send data across HTTP. After following this I realised that XAMPP did not have websockets enabled by default so I had to enable it by doing the following:
+
+*Step 1:*
+![step1](images/XAMPP1.png)
+
+*Step 2:*
+![step2](images/XAMPP2.png)
+
+*Step 3:*
+![step3](images/XAMPP3.png)
+
+Once websockets were enabled, I wrote a function to send the response to the ESP32 on port 80 (the default HTTP port). After a response was received, the old image was deleted to allow for a new image to be sent:
+
+```PHP:
+function sendContent($dataToSend)
+{
+  echo('Sending data: '. $dataToSend);
+  $host = "192.168.0.65";
+  $port = 80; // Standard HTTP port
+  
+  // Create a socket connection
+  $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+  if (!$socket) {
+    echo "socket_create() failed: " . socket_last_error() . PHP_EOL;
+    exit;
+  }
+  
+  // Connect to the ESP32 server
+  if (!socket_connect($socket, $host, $port)) {
+    echo "socket_connect() failed: " . socket_last_error() . PHP_EOL;
+    exit;
+  }
+  
+  // Send data to the ESP32
+  $bytesSent = socket_write($socket, $dataToSend, strlen($dataToSend));
+  if ($bytesSent === FALSE) {
+    echo "socket_write() failed: " . socket_last_error() . PHP_EOL;
+    exit;
+  }
+  echo "Sent " . $bytesSent . " bytes of data to ESP32." . PHP_EOL;
+  
+  // Optional: Receive response from the ESP32 (if implemented in the ESP32 code)
+  $response = socket_read($socket, 1024); // Adjust buffer size as needed
+  if ($response !== FALSE) {
+    echo "Received response from ESP32: " . $response . PHP_EOL;
+    if (file_exists('uploads\esp32-cam.jpeg')) {
+      if (unlink('uploads\esp32-cam.jpeg')) {
+          echo "File deleted successfully!";
+      } else {
+          echo "Error deleting file.";
+      }
+  } else {
+      echo "File does not exist.";
+  }
+}
+```
+
+After this I was able to get data sent out from php, I tested this using WireShark:
+
+![WireSharkCapture](images/WireShark.png)
+
+As the Wireshark capture shows, I still need to configure the ESP32 to listen on port 80. I've run out of time today, so I'll use the remaining time to create a small model for the art piece.
+
+To begin, I printed a simple human figure, cut it out, and traced it onto XPS foam using a wire cutter:
+
+![step1](images/wirecutter1.jpg)
+
+![step2](images/wirecutter2.jpg)
+
+![step3](images/wirecutter3.jpg)
+
+![step4](images/wirecutter4.jpg)
+
+This gave me a large piece to work with so I decided to cut it in half
+
+![step5](images/wirecutter5.jpg)
+
+![step6](images/wirecutter6.jpg)
+
+After practicing sanding with the first piece, I was able to get a pretty good figure with my second attempt on the second piece:
+
+![step7](images/wirecutter7.jpg)
+
+After model was finished I wired some lights to the eyes and put it on a box to act as a display stand:
+
+![modelfront](images/model1.jpg)
+
+![modelback](images/model2.jpg)
+
+## Receiving on the ESP32 part 1:
+```17/11/2024```
+
+I began with the previous code, but this time I decided to leverage the dual cores of the ESP32-S3 to separate the image sending and receiving tasks. I then used the WiFiServer library to configure the ESP32 to listen for incoming requests on port 80. Finally, I implemented a code segment within the 'serverTask' to monitor this port, process the received data (converting it from a string to an integer), and control the buzzer and lights accordingly.
+
+```C++:
+
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiServer.h>
+#include "esp_camera.h"
+#include <FreeRTOS.h>
+#include <task.h>
+#include <iostream> // for std::stoi (assuming C++11 compiler)
+#include <string>
+#include <stdexcept> // for exception handling
+
+TaskHandle_t captureTaskHandle;
+TaskHandle_t serverTaskHandle;
+
+const char* ssid = "ssid";
+const char* password = "pass";
+
+String serverName = "192.168.0.00";
+String serverPath = "/image_server/index.php";
+const int serverPort = 8000;
+
+#define port 80
+
+
+WiFiClient client;
+WiFiServer server(port);
+//CAMERA_MODEL_ESP32S3_EYE
+#define PWDN_GPIO_NUM -1
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 15
+#define SIOD_GPIO_NUM 4
+#define SIOC_GPIO_NUM 5
+#define Y2_GPIO_NUM 11
+#define Y3_GPIO_NUM 9
+#define Y4_GPIO_NUM 8
+#define Y5_GPIO_NUM 10
+#define Y6_GPIO_NUM 12
+#define Y7_GPIO_NUM 18
+#define Y8_GPIO_NUM 17
+#define Y9_GPIO_NUM 16
+#define VSYNC_GPIO_NUM 6
+#define HREF_GPIO_NUM 7
+#define PCLK_GPIO_NUM 13
+#define PIN_BUZZER 14
+#define GREEN_LIGHT 1
+#define RED_LIGHT 2
+
+
+const int timerInterval = 30000;    // time between each HTTP POST image
+const int startTone = 0;
+const int maxTone = 20000;
+unsigned long requiredResponse = 1;
+unsigned long buzzertone = 0;
+unsigned long lastClientConnectionTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(RED_LIGHT, OUTPUT);
+  pinMode(GREEN_LIGHT, OUTPUT);
+  tone(PIN_BUZZER, 0, timerInterval);
+  WiFi.mode(WIFI_STA);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);  
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("ESP32-CAM IP Address: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+  
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+
+  // init with high specs to pre-allocate larger buffers
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 5;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  } else {
+    config.frame_size = FRAMESIZE_CIF;
+    config.jpeg_quality = 12;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  }
+  
+  // camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    delay(1000);
+    ESP.restart();
+  }
+  // Create capture task on core 0 (optional, adjust based on needs)
+  xTaskCreate(captureTask, "Capture Task", 4096, NULL, 1, &captureTaskHandle);
+
+  // Optional: Create server task on core 1 (optional, adjust based on needs)
+  xTaskCreate(serverTask, "Server Task", 2048, NULL, 1, &serverTaskHandle);
+  sendPhoto(); 
+}
+
+void captureTask(void *pvParameters) {
+  // Code for capturing image and sending to server
+  while (1) {
+    // Capture image logic
+    String response = sendPhoto();
+    Serial.println("Image sent.");
+    vTaskDelay(pdMS_TO_TICKS(timerInterval));  // Delay between captures
+  }
+}
+
+void serverTask(void *pvParameters) {
+  while (1) {
+  // Code for handling incoming connections to the ESP32
+  WiFiClient client = server.available(); // Wait for incoming connections
+  if (client) {
+    Serial.println("Client connected.");
+    // Receive data from the client (PHP script)
+    std::string receivedData = "";
+    while (client.connected() && client.available()) {
+      char c = client.read();
+      receivedData += c;
+    }
+    int processedData = 0;
+    try {
+      processedData = std::stoi(receivedData);
+    } catch (const std::invalid_argument& e) {
+      Serial.println("Invalid data received: Not a number");
+    } catch (const std::out_of_range& e) {
+      Serial.println("Data out of range: Too large or too small");
+    }
+    if (maxTone > buzzertone) {
+      buzzertone += 200;
+    }
+    if (processedData >= requiredResponse) {
+      tone(PIN_BUZZER, 0, timerInterval);
+      digitalWrite(RED_LIGHT, LOW);
+      digitalWrite(GREEN_LIGHT, HIGH);
+      if (millis() - lastClientConnectionTime >= 1 * 60 * 1000) {
+      requiredResponse++;
+      lastClientConnectionTime = millis(); // Update timestamp
+      }
+    }
+    else {
+      tone(PIN_BUZZER, buzzertone, timerInterval);
+      digitalWrite(RED_LIGHT, HIGH);
+      digitalWrite(GREEN_LIGHT, LOW);
+    }
+    // Check if 5 minutes have passed since the last connection
+    client.stop(); // Close the connection
+    Serial.println("Client disconnected.");
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));  // Delay for server task
+    }
+}
+
+void loop() {
+}
+
+String sendPhoto() {
+  String getAll;
+  String getBody;
+
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  esp_camera_fb_return(fb); // dispose of the buffered image
+  fb = NULL; // reset to capture errors
+  fb = esp_camera_fb_get(); // get fresh image
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+  }
+  
+  Serial.println("Connecting to server: " + serverName);
+
+  if (client.connect(serverName.c_str(), serverPort)) {
+    Serial.println("Connection successful!");    
+    String head = "--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpeg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String tail = "\r\n--RandomNerdTutorials--\r\n";
+
+    uint32_t imageLen = fb->len;
+    uint32_t extraLen = head.length() + tail.length();
+    uint32_t totalLen = imageLen + extraLen;
+  
+    client.println("POST " + serverPath + " HTTP/1.1");
+    client.println("Host: " + serverName);
+    client.println("Content-Length: " + String(totalLen));
+    client.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+    client.println();
+    client.print(head);
+  
+    uint8_t *fbBuf = fb->buf;
+    size_t fbLen = fb->len;
+    for (size_t n=0; n<fbLen; n=n+1024) {
+      if (n+1024 < fbLen) {
+        client.write(fbBuf, 1024);
+        fbBuf += 1024;
+      }
+      else if (fbLen%1024>0) {
+        size_t remainder = fbLen%1024;
+        client.write(fbBuf, remainder);
+      }
+    }   
+    client.print(tail);
+    
+    esp_camera_fb_return(fb);
+    
+    int timoutTimer = 10000;
+    long startTimer = millis();
+    boolean state = false;
+    
+    while ((startTimer + timoutTimer) > millis()) {
+      Serial.print(".");
+      delay(100);      
+      while (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          if (getAll.length()==0) { state=true; }
+          getAll = "";
+        }
+        else if (c != '\r') { getAll += String(c); }
+        if (state==true) { getBody += String(c); }
+        startTimer = millis();
+      }
+      if (getBody.length()>0) { break; }
+    }
+    Serial.println();
+    client.stop();
+    Serial.println(getBody);
+  }
+  else {
+    getBody = "Connection to " + serverName +  " failed.";
+    Serial.println(getBody);
+  }
+  return getBody;
+}
+```
+
+## Receiving on the ESP32 part 2:
+
+```19/11/2024```
+
+The final code for both  XAMPP and the ESP32:
+
+### PHP:
+```PHP:
+<?php
+require "vendor/autoload.php";
+define('GEMINI_API_KEY','AIzaSyBnk_8Qg5JiXSLs2gWpq0fcS1BfqZQ6LXo');
+define('MODEL','gemini-1.5-flash-latest');
+define('BASEURL', 'https://generativelanguage.googleapis.com/v1beta');
+function sendContent($dataToSend)
+{
+  echo('Sending data: '. $dataToSend);
+  $host = "192.168.0.65";
+  $port = 80; // Standard HTTP port
+  
+  // Create a socket connection
+  $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+  if (!$socket) {
+    echo "socket_create() failed: " . socket_last_error() . PHP_EOL;
+    exit;
+  }
+  
+  // Connect to the ESP32 server
+  if (!socket_connect($socket, $host, $port)) {
+    echo "socket_connect() failed: " . socket_last_error() . PHP_EOL;
+    exit;
+  }
+  
+  // Send data to the ESP32
+  $bytesSent = socket_write($socket, $dataToSend, strlen($dataToSend));
+  if ($bytesSent === FALSE) {
+    echo "socket_write() failed: " . socket_last_error() . PHP_EOL;
+    exit;
+  }
+  echo "Sent " . $bytesSent . " bytes of data to ESP32." . PHP_EOL;
+  
+  // Optional: Receive response from the ESP32 (if implemented in the ESP32 code)
+  $response = socket_read($socket, 1024); // Adjust buffer size as needed
+  if ($response !== FALSE) {
+    echo "Received response from ESP32: " . $response . PHP_EOL;
+    if (file_exists('uploads\esp32-cam.jpeg')) {
+      if (unlink('uploads\esp32-cam.jpeg')) {
+          echo "File deleted successfully!";
+      } else {
+          echo "Error deleting file.";
+      }
+  } else {
+      echo "File does not exist.";
+  }
+}
+  
+  // Close the socket connection
+  socket_close($socket);
+}
+function generateContent($textPrompt,$imagePrompt,$imageType)
+{
+    $text = filter_var($textPrompt, FILTER_SANITIZE_STRING);
+    //combine the base url with preferred model and api key
+    $url = sprintf("%s/models/%s:generateContent?key=%s",BASEURL,MODEL,GEMINI_API_KEY);
+     
+    $data = [
+        "contents" => [
+            "parts" => [
+                [
+                    "inlineData" => [
+                        "mimeType" => $imageType,
+                        "data" => $imagePrompt
+                    ]
+                ],
+                [
+                    "text" => $text
+                ]
+            ]
+        ]
+    ];
+    
+    $jsonData = json_encode($data);
+    $ch = curl_init($url);
+     
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonData);
+ 
+    $response = curl_exec($ch);
+ 
+    if (curl_errno($ch)) {
+        echo 'Request error: ' . curl_error($ch);
+    } else {
+     $response = json_decode($response); 
+ 
+     if (isset($response->candidates[0]->content->parts[0]->text)) {
+        $text = $response->candidates[0]->content->parts[0]->text;
+        // Remove non-numeric characters using regular expression
+        $numeric_string = preg_replace('/[^0-9]/', '', $text);
+        $int_value = intval($numeric_string);
+        sendContent($int_value);
+    }
+  }
+    curl_close($ch);
+}
+
+if (!empty($_FILES["imageFile"]["name"])) {
+  $target_dir = "uploads/";
+  $target_file = $target_dir . basename($_FILES["imageFile"]["name"]);
+  echo($target_file);
+  $uploadOk = 1;
+  $imageFileType = strtolower(pathinfo($target_file,PATHINFO_EXTENSION));
+
+  // Check if image file is a actual image or fake image
+  if(isset($_POST["submit"])) {
+    
+    $check = getimagesize($_FILES["imageFile"]["tmp_name"]);
+    if($check !== false) {
+      echo "File is an image - " . $check["mime"] . ".";
+      $uploadOk = 1;
+    }
+    else {
+      echo "File is not an image.";
+      $uploadOk = 0;
+    }
+  }
+
+  // Check if file already exists
+  if (file_exists($target_file)) {
+    echo "Sorry, file already exists.";
+    $uploadOk = 0;
+  }
+
+  // Check file size
+  if ($_FILES["imageFile"]["size"] > 500000) {
+    echo "Sorry, your file is too large.";
+    $uploadOk = 0;
+  }
+
+  // Allow certain file formats
+  if($imageFileType != "jpg" && $imageFileType != "png" && $imageFileType != "jpeg"
+  && $imageFileType != "gif" ) {
+    echo "Sorry, only JPG, JPEG, PNG & GIF files are allowed.";
+    $uploadOk = 0;
+  }
+
+  // Check if $uploadOk is set to 0 by an error
+  if ($uploadOk == 0) {
+    echo "Sorry, your file was not uploaded.";
+  // if everything is ok, try to upload file
+  }
+  else {
+    $uploadDirectory = realpath(dirname(__FILE__)).DIRECTORY_SEPARATOR .'uploads';
+    $filePath = $uploadDirectory .DIRECTORY_SEPARATOR. basename($_FILES["imageFile"]["name"]);
+    if (move_uploaded_file($_FILES["imageFile"]["tmp_name"], $target_file)) {
+      echo "The file ". basename( $_FILES["imageFile"]["name"]). " has been uploaded.\n";
+      $text = 'How many vapes are in this image? return either the number of vapes or zero as one value';
+      $image = base64_encode(file_get_contents($filePath));
+      $fileMimeType = 'image/jpeg';
+      generateContent($text,$image,$fileMimeType);
+    }
+    else {
+      echo "Sorry, there was an error uploading your file.";
+    }
+  }
+}
+?>
+```
+### ESP32:
+```C++:
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiServer.h>
+#include "esp_camera.h"
+#include <FreeRTOS.h>
+#include <task.h>
+#include <iostream> // for std::stoi (assuming C++11 compiler)
+#include <string>
+#include <stdexcept> // for exception handling
+
+TaskHandle_t captureTaskHandle;
+TaskHandle_t serverTaskHandle;
+
+const char* ssid = "ssid";
+const char* password = "pass";
+
+String serverName = "192.168.0.00";
+String serverPath = "/image_server/index.php";
+const int serverPort = 8000;
+
+#define port 80
+
+
+WiFiClient client;
+WiFiServer server(port);
+//CAMERA_MODEL_ESP32S3_EYE
+#define PWDN_GPIO_NUM -1
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 15
+#define SIOD_GPIO_NUM 4
+#define SIOC_GPIO_NUM 5
+#define Y2_GPIO_NUM 11
+#define Y3_GPIO_NUM 9
+#define Y4_GPIO_NUM 8
+#define Y5_GPIO_NUM 10
+#define Y6_GPIO_NUM 12
+#define Y7_GPIO_NUM 18
+#define Y8_GPIO_NUM 17
+#define Y9_GPIO_NUM 16
+#define VSYNC_GPIO_NUM 6
+#define HREF_GPIO_NUM 7
+#define PCLK_GPIO_NUM 13
+#define PIN_BUZZER 14
+#define GREEN_LIGHT 1
+#define RED_LIGHT 2
+
+
+const int timerInterval = 30000;
+const int startTone = 0;
+const int maxTone = 20000;
+unsigned long requiredResponse = 1;
+unsigned long buzzertone = 0;
+unsigned long lastClientConnectionTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(RED_LIGHT, OUTPUT);
+  pinMode(GREEN_LIGHT, OUTPUT);
+  tone(PIN_BUZZER, 0, timerInterval);
+  WiFi.mode(WIFI_STA);
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);  
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("ESP32-CAM IP Address: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+  
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+
+  // init with high specs to pre-allocate larger buffers
+  if(psramFound()){
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 5;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  } else {
+    config.frame_size = FRAMESIZE_CIF;
+    config.jpeg_quality = 12;  //0-63 lower number means higher quality
+    config.fb_count = 1;
+  }
+  
+  // camera init
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("Camera init failed with error 0x%x", err);
+    delay(1000);
+    ESP.restart();
+  }
+  // Create capture task on core 0 (optional, adjust based on needs)
+  xTaskCreate(captureTask, "Capture Task", 4096, NULL, 1, &captureTaskHandle);
+
+  // Optional: Create server task on core 1 (optional, adjust based on needs)
+  xTaskCreate(serverTask, "Server Task", 2048, NULL, 1, &serverTaskHandle);
+  sendPhoto(); 
+}
+
+void captureTask(void *pvParameters) {
+  // Code for capturing image and sending to server
+  while (1) {
+    // Capture image logic
+    String response = sendPhoto();
+    Serial.println("Image sent.");
+    vTaskDelay(pdMS_TO_TICKS(timerInterval));  // Delay between captures
+  }
+}
+
+void serverTask(void *pvParameters) {
+  while (1) {
+  // Code for handling incoming connections to the ESP32
+  WiFiClient client = server.available(); // Wait for incoming connections
+  if (client) {
+    Serial.println("Client connected.");
+    // Receive data from the client (PHP script)
+    std::string receivedData = "";
+    while (client.connected() && client.available()) {
+      char c = client.read();
+      receivedData += c;
+    }
+    int processedData = 0;
+    try {
+      processedData = std::stoi(receivedData);
+    } catch (const std::invalid_argument& e) {
+      Serial.println("Invalid data received: Not a number");
+    } catch (const std::out_of_range& e) {
+      Serial.println("Data out of range: Too large or too small");
+    }
+    if (maxTone > buzzertone) {
+      buzzertone += 200;
+    }
+    if (processedData >= requiredResponse) {
+      tone(PIN_BUZZER, 0, timerInterval);
+      digitalWrite(RED_LIGHT, LOW);
+      digitalWrite(GREEN_LIGHT, HIGH);
+      if (millis() - lastClientConnectionTime >= 1 * 60 * 1000) {
+      requiredResponse++;
+      lastClientConnectionTime = millis(); // Update timestamp
+      }
+    }
+    else {
+      tone(PIN_BUZZER, buzzertone, timerInterval);
+      digitalWrite(RED_LIGHT, HIGH);
+      digitalWrite(GREEN_LIGHT, LOW);
+    }
+    // Check if 5 minutes have passed since the last connection
+    client.stop(); // Close the connection
+    Serial.println("Client disconnected.");
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));  // Delay for server task
+    }
+}
+
+void loop() {
+}
+
+String sendPhoto() {
+  String getAll;
+  String getBody;
+
+  camera_fb_t * fb = NULL;
+  fb = esp_camera_fb_get();
+  esp_camera_fb_return(fb); // dispose of the buffered image
+  fb = NULL; // reset to capture errors
+  fb = esp_camera_fb_get(); // get fresh image
+  if(!fb) {
+    Serial.println("Camera capture failed");
+    delay(1000);
+    ESP.restart();
+  }
+  
+  Serial.println("Connecting to server: " + serverName);
+
+  if (client.connect(serverName.c_str(), serverPort)) {
+    Serial.println("Connection successful!");    
+    String head = "--RandomNerdTutorials\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpeg\"\r\nContent-Type: image/jpeg\r\n\r\n";
+    String tail = "\r\n--RandomNerdTutorials--\r\n";
+
+    uint32_t imageLen = fb->len;
+    uint32_t extraLen = head.length() + tail.length();
+    uint32_t totalLen = imageLen + extraLen;
+  
+    client.println("POST " + serverPath + " HTTP/1.1");
+    client.println("Host: " + serverName);
+    client.println("Content-Length: " + String(totalLen));
+    client.println("Content-Type: multipart/form-data; boundary=RandomNerdTutorials");
+    client.println();
+    client.print(head);
+  
+    uint8_t *fbBuf = fb->buf;
+    size_t fbLen = fb->len;
+    for (size_t n=0; n<fbLen; n=n+1024) {
+      if (n+1024 < fbLen) {
+        client.write(fbBuf, 1024);
+        fbBuf += 1024;
+      }
+      else if (fbLen%1024>0) {
+        size_t remainder = fbLen%1024;
+        client.write(fbBuf, remainder);
+      }
+    }   
+    client.print(tail);
+    
+    esp_camera_fb_return(fb);
+    
+    int timoutTimer = 10000;
+    long startTimer = millis();
+    boolean state = false;
+    
+    while ((startTimer + timoutTimer) > millis()) {
+      Serial.print(".");
+      delay(100);      
+      while (client.available()) {
+        char c = client.read();
+        if (c == '\n') {
+          if (getAll.length()==0) { state=true; }
+          getAll = "";
+        }
+        else if (c != '\r') { getAll += String(c); }
+        if (state==true) { getBody += String(c); }
+        startTimer = millis();
+      }
+      if (getBody.length()>0) { break; }
+    }
+    Serial.println();
+    client.stop();
+    Serial.println(getBody);
+  }
+  else {
+    getBody = "Connection to " + serverName +  " failed.";
+    Serial.println(getBody);
+  }
+  return getBody;
+}
+```
