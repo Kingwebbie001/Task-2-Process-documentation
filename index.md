@@ -908,6 +908,7 @@ The final code for both  XAMPP and the ESP32:
 <?php
 require "vendor/autoload.php";
 define('GEMINI_API_KEY','MyApiKey');
+
 define('MODEL','gemini-1.5-flash-latest');
 define('BASEURL', 'https://generativelanguage.googleapis.com/v1beta');
 function sendContent($dataToSend)
