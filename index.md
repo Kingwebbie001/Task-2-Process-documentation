@@ -907,13 +907,13 @@ The final code for both  XAMPP and the ESP32:
 ```PHP:
 <?php
 require "vendor/autoload.php";
-define('GEMINI_API_KEY','AIzaSyBnk_8Qg5JiXSLs2gWpq0fcS1BfqZQ6LXo');
+define('GEMINI_API_KEY','MyApiKey');
 define('MODEL','gemini-1.5-flash-latest');
 define('BASEURL', 'https://generativelanguage.googleapis.com/v1beta');
 function sendContent($dataToSend)
 {
   echo('Sending data: '. $dataToSend);
-  $host = "192.168.0.65";
+  $host = "192.168.0.00";
   $port = 80; // Standard HTTP port
   
   // Create a socket connection
